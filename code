@@ -1,0 +1,566 @@
+import pandas as pd
+import os
+folder_path = "solar_data"
+all_data = []
+
+for file in os.listdir(folder_path):
+    if file.endswith(".xls") or file.endswith(".xlsx"):
+        file_path = os.path.join(folder_path, file)
+
+      
+        df_temp = pd.read_excel(file_path, skiprows=4)
+
+        all_data.append(df_temp)
+
+
+df = pd.concat(all_data, ignore_index=True)
+
+print("Raw merged rows:", len(df))
+
+
+if 'Unnamed: 0' in df.columns:
+    df = df.drop(columns=['Unnamed: 0'])
+
+df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+
+df = df.dropna(subset=['Timestamp'])
+
+df = df.reset_index(drop=True)
+    
+print("Cleaned_rows:", len(df))
+print("Columns:", df.columns)
+
+print("\n hourly radiation values:")
+print(df[['Timestamp','Radiation']].head(10))
+
+
+df['Date'] = df['Timestamp'].dt.date
+
+
+daily_df = df.groupby('Date').agg({
+    'Air_Temp': ['max', 'min'],
+    'RH(%)': 'mean',
+    'Radiation': 'mean'
+}).reset_index()
+
+daily_df.columns = ['Date', 'Tmax', 'Tmin', 'RH', 'Radiation']
+
+
+print(daily_df.head())
+print("\nDaily Data:")
+print(daily_df.head())
+print("Total days:", len(daily_df))
+
+print("\nAlong with Model Variables:")
+print(daily_df.head())
+import numpy as np
+
+phi = np.radians(18.1841)
+
+daily_df['n'] = pd.to_datetime(daily_df['Date']).dt.dayofyear
+
+daily_df['delta'] = np.radians(
+    23.45 * np.sin(np.radians((360/365)*(284 + daily_df['n'])))
+)
+
+daily_df['ws'] = np.arccos(-np.tan(phi) * np.tan(daily_df['delta']))
+
+Gsc = 0.0820  
+
+daily_df['dr'] = 1 + 0.033 * np.cos(np.radians((360/365)*daily_df['n']))
+
+daily_df['H0'] = (
+    (24*60/np.pi) * Gsc * daily_df['dr'] *
+    (
+        daily_df['ws']*np.sin(phi)*np.sin(daily_df['delta']) +
+        np.cos(phi)*np.cos(daily_df['delta'])*np.sin(daily_df['ws'])
+    )
+)
+
+print("\nRadiation vs H0:")
+print(daily_df[['Radiation','H0']].head())
+daily_df['Radiation'] = daily_df['Radiation'] * 86400 / 1e6
+print("\nRadiation vs H0(after conversion):")
+print(daily_df[['Radiation','H0']].head())
+daily_df['H-actual'] = daily_df['Radiation']
+# Temperature ratio
+daily_df['theta'] = daily_df['Tmin'] / daily_df['Tmax']
+
+# Sunshine ratio proxy (since SS not available)
+daily_df['SS_ratio'] = daily_df['Radiation'] / daily_df['Radiation'].max()
+
+# Define S and H0
+S = daily_df['SS_ratio']
+H0 = daily_df['H0']
+a1 = -0.557
+b1 = 1.046
+
+
+
+"""
+daily_df['H_pred_1'] = (a1 + b1 * S) * H0
+from sklearn.metrics import mean_squared_error
+import numpy as np
+
+rmse = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_1']))
+mbe = np.mean(daily_df['H_pred_1'] - daily_df['H_actual'])
+mpe = np.mean((daily_df['H_pred_1'] - daily_df['H_actual']) /
+              daily_df['H_actual']) * 100
+
+
+
+
+print("Model 1 Results")
+print("RMSE:", rmse)
+print("MBE:", mbe)
+print("MPE:", mpe)
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,5))
+plt.plot(daily_df['Date'], daily_df['H_actual'], label='Measured')
+plt.plot(daily_df['Date'], daily_df['H_pred_1'], label='Predicted (Model 1)')
+plt.legend()
+plt.xticks(rotation=45)
+plt.title("Measured vs Predicted - Model 1")
+plt.show()
+
+
+
+print("\n-----------------------------------")
+print("Running Model 2...")
+
+
+daily_df['SS_ratio'] = daily_df['SS_ratio'].replace(0, 0.0001)
+
+import numpy as np
+
+a2 = 0.488
+b2 = 2.243
+
+daily_df['H_pred_2'] = (
+    a2 + b2 * np.log(daily_df['SS_ratio'])
+) * daily_df['H0']
+
+rmse2 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_2']))
+mbe2 = np.mean(daily_df['H_pred_2'] - daily_df['H_actual'])
+mpe2 = np.mean((daily_df['H_pred_2'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("Model 2 Results")
+print("RMSE:", rmse2)
+print("MBE:", mbe2)
+print("MPE:", mpe2)
+
+
+a3 = -0.627
+b3 = 0.411
+
+daily_df['H_pred_3'] = (
+    a3 + b3 * np.exp(daily_df['SS_ratio'])
+) * daily_df['H0']
+
+rmse3 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_3']))
+mbe3 = np.mean(daily_df['H_pred_3'] - daily_df['H_actual'])
+mpe3 = np.mean((daily_df['H_pred_3'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 3 Results")
+print("RMSE:", rmse3)
+print("MBE:", mbe3)
+print("MPE:", mpe3)
+
+
+
+a4 = 1.351
+b4 = -1.341
+
+daily_df['H_pred_4'] = (
+    a4 + b4 * daily_df['theta']
+) * daily_df['H0']
+
+rmse4 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_4']))
+mbe4 = np.mean(daily_df['H_pred_4'] - daily_df['H_actual'])
+mpe4 = np.mean((daily_df['H_pred_4'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 4 Results")
+print("RMSE:", rmse4)
+print("MBE:", mbe4)
+print("MPE:", mpe4)
+
+
+
+
+a5 = 1.231
+b5 = -1.019
+c5 = -0.221
+
+theta = daily_df['theta']
+
+daily_df['H_pred_5'] = (
+    a5 + b5 * theta + c5 * (theta**2)
+) * daily_df['H0']
+
+rmse5 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_5']))
+mbe5 = np.mean(daily_df['H_pred_5'] - daily_df['H_actual'])
+mpe5 = np.mean((daily_df['H_pred_5'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 5 Results")
+print("RMSE:", rmse5)
+print("MBE:", mbe5)
+print("MPE:", mpe5)
+
+
+a6 = -9.148
+b6 = 19.857
+c6 = -10.269
+
+S = daily_df['SS_ratio']
+
+daily_df['H_pred_6'] = (
+    a6 + b6 * S + c6 * (S**2)
+) * daily_df['H0']
+
+rmse6 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_6']))
+mbe6 = np.mean(daily_df['H_pred_6'] - daily_df['H_actual'])
+mpe6 = np.mean((daily_df['H_pred_6'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 6 Results")
+print("RMSE:", rmse6)
+print("MBE:", mbe6)
+print("MPE:", mpe6)
+
+a7 = 0.851
+b7 = -0.007
+
+RH = daily_df['RH']
+
+daily_df['H_pred_7'] = (
+    a7 + b7 * RH
+) * daily_df['H0']
+
+rmse7 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_7']))
+mbe7 = np.mean(daily_df['H_pred_7'] - daily_df['H_actual'])
+mpe7 = np.mean((daily_df['H_pred_7'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 7 Results")
+print("RMSE:", rmse7)
+print("MBE:", mbe7)
+print("MPE:", mpe7)
+
+a8 = 0.435
+b8 = 0.468
+c8 = -0.007
+
+S = daily_df['SS_ratio']
+RH = daily_df['RH']
+
+daily_df['H_pred_8'] = (
+    a8 + b8 * S + c8 * RH
+) * daily_df['H0']
+
+rmse8 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_8']))
+mbe8 = np.mean(daily_df['H_pred_8'] - daily_df['H_actual'])
+mpe8 = np.mean((daily_df['H_pred_8'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 8 Results")
+print("RMSE:", rmse8)
+print("MBE:", mbe8)
+print("MPE:", mpe8)
+
+
+
+
+a9 = -0.388
+b9 = 0.453
+c9 = 0.017
+d9 = -0.003
+
+S = daily_df['SS_ratio']
+theta = daily_df['theta']
+RH = daily_df['RH']
+
+daily_df['H_pred_9'] = (
+    a9 + b9 * S + c9 * theta + d9 * RH
+) * daily_df['H0']
+
+rmse9 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_9']))
+mbe9 = np.mean(daily_df['H_pred_9'] - daily_df['H_actual'])
+mpe9 = np.mean((daily_df['H_pred_9'] - daily_df['H_actual']) /
+               daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 9 Results")
+print("RMSE:", rmse9)
+print("MBE:", mbe9)
+print("MPE:", mpe9)
+
+
+a10 = 0.701
+b10 = -2.329
+c10 = 2.574
+d10 = -0.945
+
+S = daily_df['SS_ratio']
+
+daily_df['H_pred_10'] = (
+    a10 + b10 * S + c10 * (S**2) + d10 * (S**3)
+) * daily_df['H0']
+
+rmse10 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_10']))
+mbe10 = np.mean(daily_df['H_pred_10'] - daily_df['H_actual'])
+mpe10 = np.mean((daily_df['H_pred_10'] - daily_df['H_actual']) /
+                daily_df['H_actual']) * 100
+
+print("\n-----------------------------------")
+print("Model 10 Results")
+print("RMSE:", rmse10)
+print("MBE:", mbe10)
+print("MPE:", mpe10)
+
+
+a11 = -0.0001
+b11 = 0.3014
+c11 = -0.3927
+d11 = -0.0032
+e11 = 0.0175
+
+S = daily_df['SS_ratio']
+RH = daily_df['RH']
+Tmax = daily_df['Tmax']
+H0 = daily_df['H0']
+
+daily_df['H_pred_11'] = (
+    a11 +
+    b11 * S +
+    c11 * (S**2) +   
+    d11 * RH +
+    e11 * Tmax      
+) * H0
+
+
+rmse11 = np.sqrt(mean_squared_error(daily_df['H_actual'], daily_df['H_pred_11']))
+mbe11 = np.mean(daily_df['H_pred_11'] - daily_df['H_actual'])
+mpe11 = np.mean((daily_df['H_pred_11'] - daily_df['H_actual']) /
+                daily_df['H_actual']) * 100
+
+
+                
+print("Model 11 Results (Paper Constants)")
+print("RMSE:", rmse11)
+print("MBE:", mbe11)
+print("MPE:", mpe11)
+
+
+for i in range(1, 12):
+    col_name = f'H_pred_{i}'
+    
+    if col_name in daily_df.columns:
+        plt.figure(figsize=(10,5))
+        plt.plot(daily_df['Date'], daily_df['H_actual'], label='Measured')
+        plt.plot(daily_df['Date'], daily_df[col_name], label=f'Model {i}')
+        plt.legend()
+        plt.title(f"Measured vs Model {i}")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+        
+rmse_values = [
+    rmse,      # Model 1
+    rmse2,
+    rmse3,
+    rmse4,
+    rmse5,
+    rmse6,
+    rmse7,
+    rmse8,
+    rmse9,
+    rmse10,
+    rmse11
+]
+
+models = [f'M{i}' for i in range(1,12)]
+
+plt.figure(figsize=(12,6))
+plt.bar(models, rmse_values)
+
+plt.title("RMSE Comparison of 11 Models")
+plt.ylabel("RMSE (MJ/m²/day)")
+plt.xlabel("Model Number")
+plt.show()
+
+
+plt.figure(figsize=(14,7))
+
+plt.plot(daily_df['Date'], daily_df['H_actual'],
+         label='Measured', linewidth=3, color='black')
+
+for i in range(1, 12):
+    col = f'H_pred_{i}'
+    if col in daily_df.columns:
+        plt.plot(daily_df['Date'], daily_df[col], alpha=0.6)
+
+plt.legend()
+plt.xticks(rotation=45)
+plt.title("Measured vs All 11 Empirical Models")
+plt.tight_layout()
+plt.show()"""
+
+
+a11 = -0.0001
+b11 = 0.3014
+c11 = -0.3927
+d11 = -0.0032
+e11 = 0.0175
+
+S = daily_df['SS_ratio']
+RH = daily_df['RH']
+Tmax = daily_df['Tmax']
+H0 = daily_df['H0']
+
+daily_df['prediction_11'] = (
+    a11 +
+    b11 * S +
+    c11 * (S**2) +   
+    d11 * RH +
+    e11 * Tmax      
+) * H0
+
+from sklearn.metrics import mean_squared_error
+rmse11 = np.sqrt(mean_squared_error(daily_df['H actual'], daily_df['H_pred_11']))
+mbe11 = np.mean(daily_df['prediction_11'] - daily_df['H actual'])
+mpe11 = np.mean((daily_df['prediction_11'] - daily_df['H actual']) /
+                daily_df['H_actual']) * 100
+
+
+                
+print("Model 11 Results")
+print("RMSE:", rmse11)
+print("MBE:", mbe11)
+print("MPE:", mpe11)
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,5))
+plt.plot(daily_df['Date'], daily_df['H_actual'], label='Actual')
+plt.plot(daily_df['Date'], daily_df['prediction_11'], label='Model-11')
+plt.legend()
+plt.xticks(rotation=45)
+plt.title("Actual vs Model-11")
+plt.show()
+
+# STEP 1: Define ANN Target (Error)
+
+
+y = daily_df['H_actual'] - daily_df['H_pred_11']
+
+print("\nSample Error values:")
+print(y.head())
+
+
+# STEP 2: Define ANN Inputs (Features)
+
+
+X = daily_df[['SS_ratio', 'Tmax', 'Tmin', 'RH', 'theta']]
+
+print("\nSample Input Features are:")
+print(X.head())
+"""
+
+
+
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+print("\nScaled Features for first five rows:")
+print(X_scaled[:5])
+"""
+
+# STEP 3: Split FIRST (correct way)
+
+
+from sklearn.model_selection import train_test_split
+
+X_train_raw, X_test_raw, y_train, y_test, idx_train, idx_test = train_test_split(
+    X, y, daily_df.index, test_size=0.3, random_state=10
+)
+
+print("\nTraining samples:", len(X_train_raw))
+print("Testing samples:", len(X_test_raw))
+
+
+# STEP 4: Feature Scaling
+
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+
+X_train = scaler.fit_transform(X_train_raw)   # fit only on train
+X_test = scaler.transform(X_test_raw)         # transform test
+
+print("\nFeature Scaling completed")
+
+
+# STEP 5: ANN Model
+
+from sklearn.neural_network import MLPRegressor
+
+ann = MLPRegressor(
+    hidden_layer_sizes=(10, 10),   # 2 hidden layers
+    activation='range: -1 to +1',  # activation function
+    max_iter=1000,                 # training iterations
+    random_state=1
+)
+
+# Train the model
+ann.fit(X_train, y_train)
+
+print("\nANN training completed successfully")
+
+
+# STEP 6: ANN Prediction + Hybrid Model
+
+# error prediction by ann
+# Predict only on test data
+ann_error_test = ann.predict(X_test)
+
+# Model 11 values for test data
+H_pred_11_test = daily_df.loc[idx_test, 'H_predicted 11']
+
+# Actual values
+H_actual_test = daily_df.loc[idx_test, 'H_actual']
+
+# Hybrid prediction
+H_pred_hybrid_test = H_pred_11_test + ann_error_test
+
+
+# STEP 7: RMSE Comparison
+
+
+rmse_hybrid = np.sqrt(mean_squared_error(H_actual_test, H_pred_hybrid_test))
+
+print("\nFINAL CORRECT OUTPUT")
+print("RMSE Model 11:", rmse11)
+print("RMSE Hybrid (Test Data):", rmse_hybrid)
+
+
+
+plt.figure(figsize=(10,5))
+plt.plot(H_actual_test.values, label='Actual (Test)')
+plt.plot(H_pred_11_test.values, label='Model 11 (Test)')
+plt.plot(H_pred_hybrid_test.values, label='Hybrid ANN (Test)')
+plt.legend()
+plt.title("Test Data: Actual output vs Model 11 output vs Hybrid output")
+plt.show()
